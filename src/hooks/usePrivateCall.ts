@@ -31,6 +31,10 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
     useEffect(() => {
         const initMedia = async () => {
             try {
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    throw new Error('getUserMedia is not supported in this browser or context. Please use HTTPS or localhost.');
+                }
+
                 const stream = await navigator.mediaDevices.getUserMedia({
                     video: callType === 'video',
                     audio: true
@@ -52,11 +56,13 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
     useEffect(() => {
         if (!roomId || !localStream) return;
 
+        let isMounted = true;
         const roomRef = doc(firestore, 'calls', roomId);
         const callerCandidatesCollection = collection(roomRef, 'callerCandidates');
         const calleeCandidatesCollection = collection(roomRef, 'calleeCandidates');
 
-        pc.current = new RTCPeerConnection(SERVERS);
+        const peerConnection = new RTCPeerConnection(SERVERS);
+        pc.current = peerConnection;
 
         // Add local tracks
         localStream.getTracks().forEach(track => {
@@ -84,6 +90,8 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
 
         const startCall = async () => {
             const roomSnapshot = await getDoc(roomRef);
+
+            if (!isMounted) return; // Prevent race condition
 
             if (!roomSnapshot.exists()) {
                 // We are the Caller
@@ -182,7 +190,8 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
         window.addEventListener('beforeunload', handleBeforeUnload);
 
         return () => {
-            pc.current?.close();
+            isMounted = false;
+            peerConnection.close();
             localStream?.getTracks().forEach(t => t.stop());
             window.removeEventListener('beforeunload', handleBeforeUnload);
             // We might want to clear room if everyone left, but that's hard to sync.
