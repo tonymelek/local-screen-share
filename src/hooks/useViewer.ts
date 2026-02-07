@@ -103,11 +103,17 @@ export function useViewer(roomId: string | undefined) {
             }
         };
 
+        const handleBeforeUnload = () => {
+            deleteDoc(viewerRef);
+        };
+        window.addEventListener('beforeunload', handleBeforeUnload);
+
         return () => {
             pc.close();
             deleteDoc(viewerRef);
             unsubscribeViewerDoc();
             unsubscribeCandidates();
+            window.removeEventListener('beforeunload', handleBeforeUnload);
         };
 
     }, [roomId]);

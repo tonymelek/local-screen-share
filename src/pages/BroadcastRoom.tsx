@@ -4,7 +4,9 @@ import { Layout } from '../components/Layout';
 import { Button } from '../components/Button';
 import { useMediaStream } from '../hooks/useMediaStream';
 import { useBroadcast } from '../hooks/useBroadcast';
-import { Copy, Check, Users, MonitorOff, Loader2 } from 'lucide-react';
+import { Copy, Check, Users, MonitorOff, Loader2, AlertTriangle } from 'lucide-react';
+import { doc, getDoc } from 'firebase/firestore';
+import { firestore } from '../lib/firebase';
 
 export default function BroadcastRoom() {
     const { roomId } = useParams();
@@ -12,11 +14,51 @@ export default function BroadcastRoom() {
     const videoRef = useRef<HTMLVideoElement>(null);
     const [copied, setCopied] = useState(false);
 
-    const { stream, isSharing, startShare, stopShare, error: mediaError } = useMediaStream();
-    const { viewerCount } = useBroadcast(isSharing ? roomId : undefined, stream);
+    // Safeguard states
+    const [shouldInitialize, setShouldInitialize] = useState(false);
+    const [showConflictDialog, setShowConflictDialog] = useState(false);
+    const [checkingRoom, setCheckingRoom] = useState(true);
 
-    // Auto-start share on mount
+    const { stream, isSharing, startShare, stopShare, error: mediaError } = useMediaStream();
+    const { viewerCount, remoteDisconnect } = useBroadcast(isSharing ? roomId : undefined, stream, shouldInitialize);
+
+    // Pre-flight check for existing room
     useEffect(() => {
+        if (!roomId) return;
+
+        const checkRoom = async () => {
+            try {
+                const roomRef = doc(firestore, 'rooms', roomId);
+                const snapshot = await getDoc(roomRef);
+
+                if (snapshot.exists()) {
+                    const data = snapshot.data();
+                    // If room is active and has a broadcaster, warn user
+                    if (data.status === 'active' && data.broadcasterId) {
+                        setShowConflictDialog(true);
+                    } else {
+                        setShouldInitialize(true);
+                    }
+                } else {
+                    setShouldInitialize(true);
+                }
+            } catch (error) {
+                console.error("Error checking room:", error);
+                // Fallback to allow initialization if check fails? 
+                // Or maybe blocking is safer. Let's allow init but log error.
+                setShouldInitialize(true);
+            } finally {
+                setCheckingRoom(false);
+            }
+        };
+
+        checkRoom();
+    }, [roomId]);
+
+    // Auto-start share on mount (only if allowed)
+    useEffect(() => {
+        // We start getting the media stream immediately so it's ready
+        // The broadcast hook won't publish until shouldInitialize is true
         startShare();
     }, [startShare]);
 
@@ -26,6 +68,24 @@ export default function BroadcastRoom() {
             videoRef.current.srcObject = stream;
         }
     }, [stream]);
+
+    // Handle Remote Disconnect
+    useEffect(() => {
+        if (remoteDisconnect) {
+            alert("Another broadcaster has taken over this room. You have been disconnected.");
+            stopShare();
+            navigate('/');
+        }
+    }, [remoteDisconnect, navigate, stopShare]);
+
+    const handleConfirmTakeover = () => {
+        setShowConflictDialog(false);
+        setShouldInitialize(true);
+    };
+
+    const handleCancelTakeover = () => {
+        navigate('/');
+    };
 
     // Handle Stop
     const handleStop = () => {
@@ -51,6 +111,46 @@ export default function BroadcastRoom() {
                     <h2 className="text-2xl font-bold mb-2">Failed to access screen</h2>
                     <p className="text-zinc-400 mb-6">Permission denied or canceled.</p>
                     <Button onClick={() => navigate('/')} variant="secondary">Go Home</Button>
+                </div>
+            </Layout>
+        );
+    }
+
+    if (showConflictDialog) {
+        return (
+            <Layout>
+                <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+                    <div className="bg-zinc-900 border border-yellow-500/30 rounded-2xl p-6 max-w-md w-full shadow-2xl animate-in zoom-in-95 duration-200">
+                        <div className="flex items-center gap-4 mb-4 text-yellow-500">
+                            <AlertTriangle className="w-8 h-8" />
+                            <h3 className="text-xl font-bold">Room is Active</h3>
+                        </div>
+                        <p className="text-zinc-300 mb-6 leading-relaxed">
+                            Someone is already broadcasting in <span className="text-white font-mono font-bold">{roomId}</span>.
+                            <br /><br />
+                            Starting your broadcast will <span className="text-red-400 font-bold">disconnect</span> the current broadcaster.
+                            Are you sure you want to take over?
+                        </p>
+                        <div className="flex gap-3 justify-end">
+                            <Button variant="secondary" onClick={handleCancelTakeover}>
+                                Cancel
+                            </Button>
+                            <Button variant="danger" onClick={handleConfirmTakeover}>
+                                Force Takeover
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            </Layout>
+        );
+    }
+
+    if (checkingRoom) {
+        return (
+            <Layout>
+                <div className="flex flex-col items-center justify-center flex-grow min-h-[50vh]">
+                    <Loader2 className="w-8 h-8 animate-spin text-violet-500 mb-4" />
+                    <p className="text-zinc-500">Checking room status...</p>
                 </div>
             </Layout>
         );
