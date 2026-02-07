@@ -98,8 +98,8 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
                 setRole('caller');
 
                 // Create Offer
-                const offer = await pc.current!.createOffer();
-                await pc.current!.setLocalDescription(offer);
+                const offer = await peerConnection.createOffer();
+                await peerConnection.setLocalDescription(offer);
 
                 // Initialize Room
                 await setDoc(roomRef, { offer: { type: offer.type, sdp: offer.sdp } });
@@ -107,9 +107,9 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
                 // Listen for Answer
                 onSnapshot(roomRef, (snapshot) => {
                     const data = snapshot.data();
-                    if (!pc.current?.currentRemoteDescription && data?.answer) {
+                    if (!peerConnection.currentRemoteDescription && data?.answer) {
                         const answer = new RTCSessionDescription(data.answer);
-                        pc.current?.setRemoteDescription(answer);
+                        peerConnection.setRemoteDescription(answer);
                     }
                 });
 
@@ -119,7 +119,7 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
                         if (change.type === 'added') {
                             const candidate = new RTCIceCandidate(change.doc.data());
                             try {
-                                await pc.current?.addIceCandidate(candidate);
+                                await peerConnection.addIceCandidate(candidate);
                             } catch (e) {
                                 console.error("Error adding ice candidate", e);
                             }
@@ -128,7 +128,7 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
                 });
 
                 // Send Caller Candidates
-                pc.current!.onicecandidate = (event) => {
+                peerConnection.onicecandidate = (event) => {
                     if (event.candidate) {
                         addDoc(callerCandidatesCollection, event.candidate.toJSON());
                     }
@@ -141,12 +141,12 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
 
                 // Set Remote Description (Offer)
                 if (data?.offer) {
-                    await pc.current!.setRemoteDescription(new RTCSessionDescription(data.offer));
+                    await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
                 }
 
                 // Create Answer
-                const answer = await pc.current!.createAnswer();
-                await pc.current!.setLocalDescription(answer);
+                const answer = await peerConnection.createAnswer();
+                await peerConnection.setLocalDescription(answer);
 
                 // Update Room with Answer
                 await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
@@ -157,7 +157,7 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
                         if (change.type === 'added') {
                             const candidate = new RTCIceCandidate(change.doc.data());
                             try {
-                                await pc.current?.addIceCandidate(candidate);
+                                await peerConnection.addIceCandidate(candidate);
                             } catch (e) {
                                 console.error("Error adding ice candidate", e);
                             }
@@ -166,7 +166,7 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
                 });
 
                 // Send Callee Candidates
-                pc.current!.onicecandidate = (event) => {
+                peerConnection.onicecandidate = (event) => {
                     if (event.candidate) {
                         addDoc(calleeCandidatesCollection, event.candidate.toJSON());
                     }
