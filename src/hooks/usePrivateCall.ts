@@ -66,11 +66,11 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
 
         // Add local tracks
         localStream.getTracks().forEach(track => {
-            pc.current?.addTrack(track, localStream);
+            peerConnection.addTrack(track, localStream);
         });
 
         // Handle remote tracks
-        pc.current.ontrack = (event) => {
+        peerConnection.ontrack = (event) => {
             setRemoteStream(_prev => {
                 // Create new stream or add to existing?
                 // Actually event.streams[0] is the stream.
@@ -79,8 +79,8 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
         };
 
         // Handle connection state changes
-        pc.current.onconnectionstatechange = () => {
-            switch (pc.current?.connectionState) {
+        peerConnection.onconnectionstatechange = () => {
+            switch (peerConnection.connectionState) {
                 case 'connected': setConnectionStatus('connected'); break;
                 case 'disconnected': setConnectionStatus('disconnected'); break;
                 case 'failed': setConnectionStatus('failed'); break;
@@ -89,25 +89,64 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
         };
 
         const startCall = async () => {
+            console.log('[PrivateCall] Starting call for room:', roomId);
+
+            // Generate a unique session ID for this participant
+            const mySessionId = Date.now() + Math.random();
+
+            // Try to claim the room or join it
             const roomSnapshot = await getDoc(roomRef);
 
-            if (!isMounted) return; // Prevent race condition
+            if (!isMounted) {
+                console.log('[PrivateCall] Component unmounted, aborting');
+                return;
+            }
+
+            let isCaller = false;
 
             if (!roomSnapshot.exists()) {
-                // We are the Caller
-                setRole('caller');
+                // Room doesn't exist - try to create it
+                console.log('[PrivateCall] Room does not exist, attempting to create as CALLER');
+                try {
+                    await setDoc(roomRef, {
+                        callerSessionId: mySessionId,
+                        createdAt: Date.now()
+                    });
+                    isCaller = true;
+                } catch (error) {
+                    // Someone else might have created it simultaneously
+                    console.log('[PrivateCall] Race condition detected, re-checking room');
+                    const recheckSnapshot = await getDoc(roomRef);
+                    if (recheckSnapshot.exists()) {
+                        const data = recheckSnapshot.data();
+                        isCaller = data?.callerSessionId === mySessionId;
+                    }
+                }
+            } else {
+                // Room exists - we are the callee
+                console.log('[PrivateCall] Room exists, joining as CALLEE');
+                isCaller = false;
+            }
 
+            console.log('[PrivateCall] Final role:', isCaller ? 'CALLER' : 'CALLEE');
+            setRole(isCaller ? 'caller' : 'callee');
+
+            if (isCaller) {
                 // Create Offer
                 const offer = await peerConnection.createOffer();
                 await peerConnection.setLocalDescription(offer);
+                console.log('[PrivateCall] Created and set local offer');
 
-                // Initialize Room
-                await setDoc(roomRef, { offer: { type: offer.type, sdp: offer.sdp } });
+                // Update room with offer
+                await updateDoc(roomRef, { offer: { type: offer.type, sdp: offer.sdp } });
+                console.log('[PrivateCall] Wrote offer to Firestore');
 
                 // Listen for Answer
                 onSnapshot(roomRef, (snapshot) => {
                     const data = snapshot.data();
+                    console.log('[PrivateCall] Room snapshot update:', data);
                     if (!peerConnection.currentRemoteDescription && data?.answer) {
+                        console.log('[PrivateCall] Setting remote answer');
                         const answer = new RTCSessionDescription(data.answer);
                         peerConnection.setRemoteDescription(answer);
                     }
@@ -130,26 +169,51 @@ export function usePrivateCall(roomId: string | undefined, callType: 'video' | '
                 // Send Caller Candidates
                 peerConnection.onicecandidate = (event) => {
                     if (event.candidate) {
+                        console.log('[PrivateCall] Sending caller ICE candidate');
                         addDoc(callerCandidatesCollection, event.candidate.toJSON());
                     }
                 };
 
             } else {
                 // We are the Callee
-                setRole('callee');
                 const data = roomSnapshot.data();
 
-                // Set Remote Description (Offer)
-                if (data?.offer) {
+                // Wait for offer if not present yet
+                if (!data?.offer) {
+                    console.log('[PrivateCall] Waiting for offer...');
+                    // Listen for offer
+                    const unsubscribe = onSnapshot(roomRef, async (snapshot) => {
+                        const updatedData = snapshot.data();
+                        if (updatedData?.offer && !peerConnection.currentRemoteDescription) {
+                            console.log('[PrivateCall] Offer received, setting remote offer');
+                            await peerConnection.setRemoteDescription(new RTCSessionDescription(updatedData.offer));
+
+                            // Create Answer
+                            const answer = await peerConnection.createAnswer();
+                            await peerConnection.setLocalDescription(answer);
+                            console.log('[PrivateCall] Created and set local answer');
+
+                            // Update Room with Answer
+                            await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
+                            console.log('[PrivateCall] Wrote answer to Firestore');
+
+                            unsubscribe();
+                        }
+                    });
+                } else {
+                    // Offer already exists
+                    console.log('[PrivateCall] Setting remote offer');
                     await peerConnection.setRemoteDescription(new RTCSessionDescription(data.offer));
+
+                    // Create Answer
+                    const answer = await peerConnection.createAnswer();
+                    await peerConnection.setLocalDescription(answer);
+                    console.log('[PrivateCall] Created and set local answer');
+
+                    // Update Room with Answer
+                    await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
+                    console.log('[PrivateCall] Wrote answer to Firestore');
                 }
-
-                // Create Answer
-                const answer = await peerConnection.createAnswer();
-                await peerConnection.setLocalDescription(answer);
-
-                // Update Room with Answer
-                await updateDoc(roomRef, { answer: { type: answer.type, sdp: answer.sdp } });
 
                 // Listen for Caller Candidates
                 onSnapshot(callerCandidatesCollection, (snapshot) => {
